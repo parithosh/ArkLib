@@ -1,0 +1,80 @@
+#!/usr/bin/env bash
+# Prepare an Amp orb for ArkLib: the pinned Lean toolchain, the dependency packages with
+# Mathlib's precompiled cache, and as much of the ArkLib build as fits in the time budget.
+# Every step is idempotent, so a warm orb or stale snapshot only redoes what changed.
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$repo_root"
+
+step() {
+  local label="$1"
+  shift
+  local start=$SECONDS
+  echo "==> $label"
+  "$@"
+  echo "<== $label ($((SECONDS - start))s)"
+}
+
+export ELAN_HOME="${ELAN_HOME:-$HOME/.elan}"
+export PATH="$ELAN_HOME/bin:$PATH"
+
+install_elan() {
+  if command -v elan >/dev/null 2>&1; then
+    return
+  fi
+  local installer
+  installer="$(mktemp)"
+  curl -sSfL https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh -o "$installer"
+  sh "$installer" -y --default-toolchain none --no-modify-path
+  rm -f "$installer"
+}
+
+# Amp and supervised services start in fresh login shells; ~/.local/bin is already on their PATH.
+link_elan_bins() {
+  mkdir -p "$HOME/.local/bin"
+  local bin
+  for bin in "$ELAN_HOME"/bin/*; do
+    ln -sfn "$bin" "$HOME/.local/bin/$(basename "$bin")"
+  done
+}
+
+install_toolchain() {
+  elan toolchain install "$(cat lean-toolchain)"
+}
+
+# Clones the dependencies at the manifest revisions and downloads Mathlib's precompiled oleans.
+fetch_cache() {
+  lake exe cache get
+}
+
+# VCVio's FFI C sources live in submodules that Lake does not fetch; the native runtime
+# executables run by validate.sh link them (see .github/workflows/ci.yml). Shallow clones take
+# seconds; full clones take minutes.
+fetch_vcvio_submodules() {
+  if [ -e .lake/packages/VCVio/.git ]; then
+    git -C .lake/packages/VCVio submodule update --init --recursive --depth 1 --quiet
+  fi
+}
+
+# A cold build of the library takes about 20 minutes on a default orb, longer than Amp's setup
+# limit, so it runs under a budget.
+# Lake keeps every finished module, so the snapshot, and the next setup run on top of it,
+# start from wherever this run stopped.
+build_library() {
+  local budget="${ARKLIB_SETUP_BUILD_SECONDS:-780}"
+  local status=0
+  timeout --signal=INT --kill-after=30 "$budget" lake build -q || status=$?
+  if [ "$status" -eq 124 ]; then
+    echo "lake build exceeded the ${budget}s setup budget; the next 'lake build' resumes it."
+  elif [ "$status" -ne 0 ]; then
+    echo "lake build failed with status $status; continuing so the dependency setup is kept."
+  fi
+}
+
+step "Install elan" install_elan
+step "Link elan binaries" link_elan_bins
+step "Install Lean toolchain" install_toolchain
+step "Fetch dependencies and Mathlib cache" fetch_cache
+step "Fetch VCVio FFI submodules" fetch_vcvio_submodules
+step "Build ArkLib" build_library

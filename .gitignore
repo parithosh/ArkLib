@@ -37,3 +37,6 @@ __pycache__/
 # Generated documentation and temporary comparison
 /home_page/docs/
 /home_page/docs_original/
+
+# Amp orb portal metadata
+/.amp/portals/*

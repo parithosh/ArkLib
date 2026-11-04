@@ -397,6 +397,12 @@ The nightly scheduled run, and a manual run with `clean_build` set, skips the bu
 builds from scratch. That keeps an absolute build-time trend and checks that nothing passes only
 because of stale cached output.
 
+Amp orbs prepare themselves with [`.agents/setup`](../../.agents/setup): it installs elan and the
+pinned toolchain, runs `lake exe cache get`, shallow-clones VCVio's FFI submodules, and runs
+`lake build` for at most 13 minutes, since a cold library build takes about 20 minutes on a default
+orb. Amp snapshots the result, so a new orb continues from the finished modules; the first
+`lake build` in a thread completes whatever the budget left.
+
 ## Manual Timing Helper
 
 If you need to reproduce the timing workflow locally, the same helper script can
